@@ -1,0 +1,17 @@
+[package]
+name = "meander"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Low-level Wayland desktop UI toolkit for river/gharial."
+
+[dependencies]
+wayland-client.workspace = true
+wayland-protocols.workspace = true
+wayland-protocols-wlr.workspace = true
+rustix.workspace = true
+bitflags.workspace = true
+tiny-skia.workspace = true
+fontdue.workspace = true
+thiserror.workspace = true
