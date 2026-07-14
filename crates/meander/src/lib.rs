@@ -6,7 +6,8 @@
 //! assemble in plain Rust to build whatever surface you want: a bar, a
 //! launcher, a tooltip overlay, a notification daemon, a wallpaper, a HUD.
 //!
-//! Companion crate [`meander-gharial`] gives first-class access to the gharial
+//! Companion crate [`meander-gharial`](https://docs.rs/meander-gharial) gives
+//! first-class access to the gharial
 //! window manager over its IPC socket, so a meander surface can subscribe to
 //! the live tag mask, active mode, focused window and layout parameters.
 //!
@@ -69,15 +70,17 @@ pub mod input;
 pub mod output;
 pub mod surface;
 
+mod buffer_layout;
 mod runtime;
 mod shm;
+mod shm_format;
 
 pub use canvas::Canvas;
 pub use color::Color;
 pub use error::{Error, Result};
 pub use event::{CloseReason, Event};
-pub use font::Font;
-pub use input::{Axis, PointerButton, PointerEvent, PointerEventKind};
+pub use font::{Font, TextRun, DEFAULT_CACHE_BUDGET};
+pub use input::{PointerButton, PointerEvent, PointerEventKind, Scroll, ScrollAxis, ScrollSource};
 pub use output::{OutputId, OutputInfo, Subpixel, Transform};
 pub use runtime::{App, SurfaceHandle};
 pub use surface::{Anchor, KeyboardInteractivity, Layer, LayerSurfaceBuilder, SurfaceId};

@@ -15,6 +15,18 @@ bitflags! {
         const BOTTOM = 0b0010;
         const LEFT   = 0b0100;
         const RIGHT  = 0b1000;
+
+        /// Full-width strip along the top edge — the typical bar position.
+        const TOP_STRIP    = Self::TOP.bits()    | Self::LEFT.bits() | Self::RIGHT.bits();
+        /// Full-width strip along the bottom edge.
+        const BOTTOM_STRIP = Self::BOTTOM.bits() | Self::LEFT.bits() | Self::RIGHT.bits();
+        /// Full-height strip along the left edge.
+        const LEFT_STRIP   = Self::LEFT.bits()   | Self::TOP.bits()  | Self::BOTTOM.bits();
+        /// Full-height strip along the right edge.
+        const RIGHT_STRIP  = Self::RIGHT.bits()  | Self::TOP.bits()  | Self::BOTTOM.bits();
+        /// Fill the entire output area minus exclusive zones.
+        const ALL          = Self::TOP.bits() | Self::BOTTOM.bits()
+                           | Self::LEFT.bits() | Self::RIGHT.bits();
     }
 }
 
@@ -134,5 +146,72 @@ impl<'a> LayerSurfaceBuilder<'a> {
 
     pub fn build(self) -> crate::Result<SurfaceId> {
         crate::runtime::build_layer_surface(self)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn anchor_flags_compose() {
+        let a = Anchor::TOP | Anchor::LEFT | Anchor::RIGHT;
+        assert!(a.contains(Anchor::TOP));
+        assert!(a.contains(Anchor::LEFT));
+        assert!(a.contains(Anchor::RIGHT));
+        assert!(!a.contains(Anchor::BOTTOM));
+    }
+
+    #[test]
+    fn anchor_bits_are_disjoint() {
+        let all = Anchor::TOP | Anchor::BOTTOM | Anchor::LEFT | Anchor::RIGHT;
+        assert_eq!(all.bits().count_ones(), 4);
+    }
+
+    #[test]
+    fn surface_id_round_trip() {
+        let id = SurfaceId(7);
+        assert_eq!(id.raw(), 7);
+    }
+
+    #[test]
+    fn top_strip_preset_matches_top_left_right() {
+        assert_eq!(
+            Anchor::TOP_STRIP,
+            Anchor::TOP | Anchor::LEFT | Anchor::RIGHT
+        );
+    }
+
+    #[test]
+    fn bottom_strip_preset_matches_bottom_left_right() {
+        assert_eq!(
+            Anchor::BOTTOM_STRIP,
+            Anchor::BOTTOM | Anchor::LEFT | Anchor::RIGHT,
+        );
+    }
+
+    #[test]
+    fn left_strip_preset_matches_left_top_bottom() {
+        assert_eq!(
+            Anchor::LEFT_STRIP,
+            Anchor::LEFT | Anchor::TOP | Anchor::BOTTOM,
+        );
+    }
+
+    #[test]
+    fn right_strip_preset_matches_right_top_bottom() {
+        assert_eq!(
+            Anchor::RIGHT_STRIP,
+            Anchor::RIGHT | Anchor::TOP | Anchor::BOTTOM,
+        );
+    }
+
+    #[test]
+    fn all_preset_covers_every_edge() {
+        assert!(Anchor::ALL.contains(Anchor::TOP));
+        assert!(Anchor::ALL.contains(Anchor::BOTTOM));
+        assert!(Anchor::ALL.contains(Anchor::LEFT));
+        assert!(Anchor::ALL.contains(Anchor::RIGHT));
+        assert_eq!(Anchor::ALL.bits().count_ones(), 4);
     }
 }
