@@ -436,7 +436,10 @@ mod server_tests {
     }
 
     /// Spawn a one-shot server whose `handler` runs against the accepted
-    /// connection. Returns a guard owning the socket path.
+    /// connection. The client's request line is drained before `handler` runs,
+    /// so a handler that answers and closes can't reset the client's still-unread
+    /// write (an RST on close with unread inbound data would discard the reply
+    /// the client hasn't read yet).
     fn serve<F>(handler: F) -> Server
     where
         F: FnOnce(UnixStream) + Send + 'static,
@@ -450,7 +453,10 @@ mod server_tests {
         let _ = std::fs::remove_file(&path);
         let listener = UnixListener::bind(&path).expect("bind test socket");
         thread::spawn(move || {
-            if let Ok((stream, _)) = listener.accept() {
+            if let Ok((mut stream, _)) = listener.accept() {
+                // Drain the (short) request so a later close is clean.
+                let mut buf = [0u8; 256];
+                let _ = stream.read(&mut buf);
                 handler(stream);
             }
         });
@@ -496,11 +502,8 @@ mod server_tests {
 
     #[test]
     fn eof_without_data_is_empty_error() {
-        let s = serve(|mut stream| {
-            // Consume the request so the client's write succeeds, then close
-            // without answering.
-            let mut buf = [0u8; 256];
-            let _ = stream.read(&mut buf);
+        let s = serve(|stream| {
+            // Request already drained by `serve`; close without answering.
             drop(stream);
         });
         let err = send_one(&s.path, &status_req(), Duration::from_secs(2)).unwrap_err();
@@ -558,9 +561,11 @@ mod server_tests {
     #[test]
     fn shutdown_after_partial_line_parses_what_arrived() {
         let s = serve(|mut stream| {
-            // Write a complete line then close mid-stream (no trailing data).
+            // Request already drained by `serve`; answer, then shut down the
+            // write half so the client sees a clean EOF after the line.
             let _ = stream.write_all(b"ok partial\n");
-            let _ = stream.shutdown(std::net::Shutdown::Both);
+            let _ = stream.flush();
+            let _ = stream.shutdown(std::net::Shutdown::Write);
         });
         let resp = send_one(&s.path, &status_req(), Duration::from_secs(2)).unwrap();
         assert_eq!(resp, Response::Ok("partial".into()));
