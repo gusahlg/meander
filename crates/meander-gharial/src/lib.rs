@@ -24,8 +24,8 @@
 mod ipc;
 mod status;
 
-pub use ipc::{Error, ParseError, Request, Response, Result};
-pub use status::{Status, StatusPoller};
+pub use ipc::{Error, ParseError, Request, Response, Result, MAX_RESPONSE_BYTES};
+pub use status::{PollSnapshot, Status, StatusParseError, StatusPoller, MIN_POLL_INTERVAL};
 
 use std::ffi::OsString;
 use std::path::PathBuf;
@@ -108,27 +108,49 @@ impl Gharial {
     }
 
     /// Block until the daemon answers `ping`, or `timeout` elapses.
+    ///
+    /// Every probe and sleep is capped to the time *remaining* to the overall
+    /// deadline, so a per-request timeout longer than `timeout` (the default is
+    /// 500 ms) can never overrun the budget the caller asked for.
     pub fn wait_until_ready(&self, timeout: Duration) -> Result<()> {
         let deadline = std::time::Instant::now() + timeout;
+        let poll_gap = Duration::from_millis(25);
         loop {
-            if self.ping().is_ok() {
-                return Ok(());
-            }
-            if std::time::Instant::now() >= deadline {
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            if remaining.is_zero() {
                 return Err(Error::Timeout);
             }
-            std::thread::sleep(Duration::from_millis(25));
+            // Never let a single probe outlast the caller's deadline.
+            if self.ping_within(remaining.min(self.timeout)).is_ok() {
+                return Ok(());
+            }
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            if remaining.is_zero() {
+                return Err(Error::Timeout);
+            }
+            std::thread::sleep(poll_gap.min(remaining));
         }
     }
 
     /// Low-level: send any command (the verb + args you'd pass to
     /// `gharialctl`) and read the parsed response.
     pub fn request(&self, command: &str, args: &[&str]) -> Result<Response> {
+        self.request_within(command, args, self.timeout)
+    }
+
+    fn request_within(&self, command: &str, args: &[&str], timeout: Duration) -> Result<Response> {
         let req = Request {
             command: command.to_string(),
             args: args.iter().map(|s| s.to_string()).collect(),
         };
-        ipc::send_one(&self.socket, &req, self.timeout)
+        ipc::send_one(&self.socket, &req, timeout)
+    }
+
+    fn ping_within(&self, timeout: Duration) -> Result<()> {
+        match self.request_within("ping", &[], timeout)? {
+            Response::Ok(_) => Ok(()),
+            Response::Err(e) => Err(Error::Daemon(e)),
+        }
     }
 
     /// `ping` — succeeds when the daemon is reachable.
@@ -165,12 +187,27 @@ impl Gharial {
     }
 
     /// Full key=value snapshot of the daemon's parameters.
+    ///
+    /// Parses strictly: a malformed known field (bad mask, integer, or ratio)
+    /// is an [`Error::Status`] rather than a silently-coerced value. For the
+    /// permissive behaviour use [`Gharial::status_lossy`].
     pub fn status(&self) -> Result<Status> {
         let body = match self.request("status", &[])? {
             Response::Ok(b) => b,
             Response::Err(e) => return Err(Error::Daemon(e)),
         };
-        Ok(Status::parse(&body))
+        Ok(Status::try_parse(&body)?)
+    }
+
+    /// Like [`Gharial::status`] but tolerant: malformed known fields are coerced
+    /// to defaults instead of failing. Handy against an older/newer daemon whose
+    /// status line you would rather read approximately than not at all.
+    pub fn status_lossy(&self) -> Result<Status> {
+        let body = match self.request("status", &[])? {
+            Response::Ok(b) => b,
+            Response::Err(e) => return Err(Error::Daemon(e)),
+        };
+        Ok(Status::parse_lossy(&body))
     }
 
     /// Launch a program detached, as gharialctl would.
@@ -205,6 +242,12 @@ impl Gharial {
     }
 
     fn tag(&self, action: &str, n: u32) -> Result<()> {
+        // gharial models exactly 32 tags, 1-indexed; anything else would be
+        // rejected by the daemon, so fail locally with a typed error instead of
+        // a round-trip.
+        if !(1..=32).contains(&n) {
+            return Err(Error::BadArgs("tag number must be in 1..=32"));
+        }
         let n_str = n.to_string();
         match self.request("tag", &[action, &n_str])? {
             Response::Ok(_) => Ok(()),
@@ -222,12 +265,150 @@ impl Gharial {
 
     /// Build a background poller that fetches `status` every `interval`. The
     /// returned [`StatusPoller`] owns a thread; drop it to stop polling.
+    ///
+    /// A sub-minimum interval is clamped up to [`MIN_POLL_INTERVAL`] so it
+    /// cannot spin the socket. Panics if the OS refuses an eventfd or a thread —
+    /// use [`try_start_polling`](Self::try_start_polling) to handle that.
     pub fn start_polling(&self, interval: Duration) -> StatusPoller {
         StatusPoller::new(self.clone(), interval)
+    }
+
+    /// Fallible poller constructor: rejects a zero/sub-minimum interval with
+    /// [`Error::BadArgs`] and returns OS eventfd/thread-spawn failures instead
+    /// of panicking.
+    pub fn try_start_polling(&self, interval: Duration) -> Result<StatusPoller> {
+        StatusPoller::try_new(self.clone(), interval)
     }
 
     /// Single-shot poll: returns the current status or an error.
     pub fn poll_status(&self) -> Result<Status> {
         self.status()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    // `std::env` is process-global; serialise these tests so they don't see
+    // each other's mutations.
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    struct EnvGuard {
+        keys: Vec<(&'static str, Option<std::ffi::OsString>)>,
+    }
+
+    impl EnvGuard {
+        fn save(keys: &[&'static str]) -> Self {
+            Self {
+                keys: keys.iter().map(|k| (*k, std::env::var_os(k))).collect(),
+            }
+        }
+
+        fn set(&self, key: &str, value: &str) {
+            // SAFETY: tests run under ENV_LOCK so no other thread observes
+            // a torn read of process env state.
+            unsafe { std::env::set_var(key, value) };
+        }
+
+        fn unset(&self, key: &str) {
+            unsafe { std::env::remove_var(key) };
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            for (k, v) in &self.keys {
+                unsafe {
+                    match v {
+                        Some(val) => std::env::set_var(k, val),
+                        None => std::env::remove_var(k),
+                    }
+                }
+            }
+        }
+    }
+
+    const KEYS: &[&str] = &[
+        "GHARIAL_SOCKET",
+        "XDG_RUNTIME_DIR",
+        "WAYLAND_DISPLAY",
+        "USER",
+    ];
+
+    #[test]
+    fn tag_helpers_reject_out_of_range_without_touching_the_socket() {
+        // `with_socket` never connects, so these calls exercise only the local
+        // range check; a bad tag must fail before any I/O.
+        let g = Gharial::with_socket("/nonexistent/gharial.sock");
+        assert!(matches!(g.tag_focus(0), Err(Error::BadArgs(_))));
+        assert!(matches!(g.tag_focus(33), Err(Error::BadArgs(_))));
+        assert!(matches!(g.tag_toggle(100), Err(Error::BadArgs(_))));
+        assert!(matches!(g.tag_move(0), Err(Error::BadArgs(_))));
+        assert!(matches!(g.tag_window_toggle(33), Err(Error::BadArgs(_))));
+    }
+
+    #[test]
+    fn gharial_socket_env_wins() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let g = EnvGuard::save(KEYS);
+        g.set("GHARIAL_SOCKET", "/explicit/path.sock");
+        g.set("XDG_RUNTIME_DIR", "/should/be/ignored");
+        g.set("WAYLAND_DISPLAY", "wayland-7");
+        assert_eq!(socket_path(), PathBuf::from("/explicit/path.sock"));
+    }
+
+    #[test]
+    fn xdg_runtime_dir_with_wayland_display() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let g = EnvGuard::save(KEYS);
+        g.unset("GHARIAL_SOCKET");
+        g.set("XDG_RUNTIME_DIR", "/run/user/1000");
+        g.set("WAYLAND_DISPLAY", "wayland-2");
+        assert_eq!(
+            socket_path(),
+            PathBuf::from("/run/user/1000/gharial-wayland-2.sock"),
+        );
+    }
+
+    #[test]
+    fn xdg_runtime_dir_without_wayland_display() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let g = EnvGuard::save(KEYS);
+        g.unset("GHARIAL_SOCKET");
+        g.set("XDG_RUNTIME_DIR", "/run/user/42");
+        g.unset("WAYLAND_DISPLAY");
+        assert_eq!(socket_path(), PathBuf::from("/run/user/42/gharial.sock"));
+    }
+
+    #[test]
+    fn xdg_runtime_dir_treats_empty_wayland_display_as_unset() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let g = EnvGuard::save(KEYS);
+        g.unset("GHARIAL_SOCKET");
+        g.set("XDG_RUNTIME_DIR", "/run/user/42");
+        g.set("WAYLAND_DISPLAY", "");
+        assert_eq!(socket_path(), PathBuf::from("/run/user/42/gharial.sock"));
+    }
+
+    #[test]
+    fn falls_back_to_tmp_with_user_when_xdg_missing() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let g = EnvGuard::save(KEYS);
+        g.unset("GHARIAL_SOCKET");
+        g.unset("XDG_RUNTIME_DIR");
+        g.set("USER", "alice");
+        assert_eq!(socket_path(), PathBuf::from("/tmp/gharial-alice.sock"));
+    }
+
+    #[test]
+    fn falls_back_to_tmp_with_default_user_when_user_missing() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let g = EnvGuard::save(KEYS);
+        g.unset("GHARIAL_SOCKET");
+        g.unset("XDG_RUNTIME_DIR");
+        g.unset("USER");
+        assert_eq!(socket_path(), PathBuf::from("/tmp/gharial-default.sock"));
     }
 }

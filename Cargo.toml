@@ -19,11 +19,12 @@ meander = { path = "crates/meander" }
 meander-gharial = { path = "crates/meander-gharial" }
 
 wayland-client = "0.31"
-wayland-protocols = { version = "0.32", features = ["client", "unstable"] }
 wayland-protocols-wlr = { version = "0.3", features = ["client"] }
-rustix = { version = "1.1", features = ["fs", "mm", "event", "pipe"] }
+rustix = { version = "1.1", features = ["fs", "mm", "event"] }
 bitflags = "2.6"
-tiny-skia = "0.11"
+# tiny-skia's default `png-format` feature pulls in `png`/`miniz-oxide`; meander
+# only rasterises into caller-owned buffers, so keep just `std` + `simd`.
+tiny-skia = { version = "0.11", default-features = false, features = ["std", "simd"] }
 fontdue = "0.9"
 thiserror = "1"
 

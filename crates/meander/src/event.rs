@@ -46,8 +46,16 @@ pub enum Event {
     OutputAdded(OutputId),
     /// A monitor's parameters changed (mode, scale, name, ...).
     OutputChanged(OutputId),
-    /// A monitor was unplugged.
+    /// A monitor was unplugged. Meander has already purged it from every
+    /// surface and re-emitted a [`Configure`](Event::Configure) for any surface
+    /// whose scale changed as a result, *before* this event.
     OutputRemoved(OutputId),
+
+    /// A compositor global meander depends on (`wl_compositor`, `wl_shm`, or
+    /// `zwlr_layer_shell_v1`) was removed at runtime. The connection can no
+    /// longer service surfaces; you should tear down and exit. Named by
+    /// interface for logging.
+    GlobalLost(&'static str),
 
     /// Pointer event delivered to one of our surfaces.
     Pointer(PointerEvent),

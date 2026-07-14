@@ -4,7 +4,15 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+readme = "README.md"
 description = "Gharial WM IPC client for meander."
+keywords = ["wayland", "gharial", "ipc", "window-manager"]
+categories = ["api-bindings", "os::unix-apis"]
 
 [dependencies]
 thiserror.workspace = true
+# `event` only: the status poller exposes a pollable eventfd so consumers can
+# integrate change notifications into their own poll/epoll loop.
+rustix = { version = "1.1", features = ["event"] }

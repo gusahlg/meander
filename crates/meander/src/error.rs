@@ -34,8 +34,39 @@ pub enum Error {
     #[error("surface has not been configured yet — wait for Event::Configure before drawing")]
     NotConfigured,
 
+    #[error(
+        "both shm buffers are still held by the compositor — wait for the next \
+         frame callback or buffer release before drawing again"
+    )]
+    BuffersBusy,
+
+    #[error("layer surface was built pinned to output {0:?}, which is not known to this App")]
+    UnknownOutput(crate::OutputId),
+
     #[error("font: {0}")]
     Font(&'static str),
+
+    #[error("invalid buffer dimensions: {0}")]
+    InvalidBufferDimensions(&'static str),
+
+    #[error(
+        "requested shm buffer allocation of {requested} bytes exceeds the \
+         {max}-byte per-pool maximum"
+    )]
+    BufferTooLarge { requested: usize, max: usize },
+
+    #[error("invalid argument: {0}")]
+    InvalidArgument(&'static str),
+
+    #[error(
+        "compositor's {interface} is version {advertised}, but this feature \
+         needs at least version {required}"
+    )]
+    UnsupportedProtocolVersion {
+        interface: &'static str,
+        advertised: u32,
+        required: u32,
+    },
 }
 
 pub type Result<T, E = Error> = std::result::Result<T, E>;

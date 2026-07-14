@@ -32,13 +32,53 @@ impl PointerButton {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum Axis {
-    /// Positive = down, negative = up. Units: pointer-axis "discrete steps"
-    /// when available, otherwise pixels (compositor-defined).
-    Vertical(f64),
+/// Which axis a scroll event moved along.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScrollAxis {
+    /// Positive = down, negative = up.
+    Vertical,
     /// Positive = right, negative = left.
-    Horizontal(f64),
+    Horizontal,
+}
+
+/// The physical origin of a scroll, as advertised by `wl_pointer.axis_source`
+/// (available on `wl_pointer` v5+). Distinguishes a notched wheel from
+/// continuous touchpad scrolling so callers can apply the right acceleration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScrollSource {
+    /// A physical, usually-notched scroll wheel.
+    Wheel,
+    /// A touchpad finger drag (kinetic; ends with a stop).
+    Finger,
+    /// A continuous-motion device with no notches.
+    Continuous,
+    /// Sideways wheel tilt.
+    WheelTilt,
+    /// The compositor did not advertise a source (pre-v5 or unknown value).
+    Unknown,
+}
+
+/// One coalesced scroll event.
+///
+/// Wayland reports a continuous `value` plus, for notched wheels, a discrete
+/// step count. Meander keeps them separate so a caller never mistakes a
+/// continuous touchpad delta for a wheel notch.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Scroll {
+    pub axis: ScrollAxis,
+    /// Continuous scroll distance in surface-local pixels
+    /// (compositor-defined). Zero for an `axis_stop`.
+    pub value: f64,
+    /// Discrete step count for notched wheels: from `axis_value120` (÷120) on
+    /// `wl_pointer` v8+, or `axis_discrete` on v5–7. `None` for touchpad /
+    /// continuous sources and on pre-v5 pointers.
+    pub discrete: Option<f64>,
+    /// Where the scroll originated, when advertised (v5+); otherwise
+    /// [`ScrollSource::Unknown`].
+    pub source: ScrollSource,
+    /// True when this event marks the end of a kinetic scroll
+    /// (`wl_pointer.axis_stop`, v5+). `value` is 0 in that case.
+    pub stop: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -48,7 +88,7 @@ pub enum PointerEventKind {
     Motion,
     Press(PointerButton),
     Release(PointerButton),
-    Scroll(Axis),
+    Scroll(Scroll),
 }
 
 /// Coalesced pointer event for one surface.

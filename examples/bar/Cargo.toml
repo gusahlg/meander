@@ -14,3 +14,6 @@ path = "src/main.rs"
 [dependencies]
 meander.workspace = true
 meander-gharial.workspace = true
+# Used to poll the Wayland connection fd and the status poller's notification
+# fd together, so the bar is change-driven instead of waking on a timer.
+rustix = { version = "1.1", features = ["event"] }
